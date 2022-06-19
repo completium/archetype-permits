@@ -96,12 +96,16 @@ function has_expired(up : user_permit, e : nat) : bool {
 
 // Permit entries -------------------------------------------------------------
 
-entry manage_consumer(c : or<address, address>) {
+enum consumer_op =
+| add<address>
+| remove<address>
+
+entry manage_consumer(op : consumer_op) {
   called by owner
   effect {
-    match c with
-    | left(a) -> consumer.add({ a })
-    | right(a) -> consumer.remove(a)
+    match op with
+    | add(a)    -> consumer.add({ a })
+    | remove(a) -> consumer.remove(a)
     end
   }
 }
@@ -145,8 +149,8 @@ entry permit(pk : key, sig : signature, data : bytes) {
     const pcounter      = up[0];
     const puser_permits = up[1];
     const to_sign = pack(((self_address, self_chain_id), (pcounter, data)));
-    do_require(check_signature(pk, sig, to_sign), (MISSIGNED, to_sign));
     const e = get_default_expiry(user);
+    do_require(check_signature(pk, sig, to_sign), (MISSIGNED, to_sign));
     permits.add_update(user, {
       counter += 1;
       user_permits = put(puser_permits, data, { expiry = some(e); created_at = now })

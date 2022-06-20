@@ -162,7 +162,7 @@ entry permit(pk : key, sig : signature, data : bytes) {
   }
 }
 
-entry consume_permit(signer : address, data: bytes, err: string) {
+entry consume(signer : address, data: bytes, err: string) {
   called by consumer
   effect {
     const permit_key = blake2b(data);
@@ -174,7 +174,7 @@ entry consume_permit(signer : address, data: bytes, err: string) {
   }
 }
 
-entry check_permit(signer : key, sig : signature, data : bytes) {
+entry check(signer : key, sig : signature, data : bytes) {
   called by consumer
   effect {
     const pkh = key_to_address(signer);

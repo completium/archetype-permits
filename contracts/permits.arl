@@ -1,6 +1,6 @@
-archetype permits(owner : address)
+archetype permits(owner : address) with metadata ""
 
-// ERRORs ---------------------------------------------------------------------
+/* ERRORS ------------------------------------------------------------------ */
 
 constant EXPIRY_TOO_BIG        : string = "EXPIRY_TOO_BIG"
 constant USER_PERMIT_NOT_FOUND : string = "USER_PERMIT_NOT_FOUND"
@@ -8,7 +8,7 @@ constant PERMIT_NOT_FOUND      : string = "PERMIT_NOT_FOUND"
 constant MISSIGNED             : string = "MISSIGNED"
 constant PERMIT_EXPIRED        : string = "PERMIT_EXPIRED"
 
-// OWNERSHIP TRANSFER ---------------------------------------------------------
+/* OWNERSHIP TRANSFER ------------------------------------------------------- */
 
 variable owner_candidate : option<address> = none
 
@@ -29,7 +29,7 @@ entry claim_ownership() {
   }
 }
 
-// PAUSABLE -------------------------------------------------------------------
+/* PAUSABLE ---------------------------------------------------------------- */
 
 variable paused : bool = false
 
@@ -58,7 +58,17 @@ entry unpause() {
   }
 }
 
-// Storage --------------------------------------------------------------------
+/* METADATA ---------------------------------------------------------------- */
+
+entry set_metadata(k: string, d : option<bytes>) {
+  called by owner
+  require { md_r1 : is_not_paused() }
+  effect {
+    metadata := update(metadata, k, d)
+  }
+}
+
+/* STORAGE ----------------------------------------------------------------- */
 
 asset consumer {
   cid : address
@@ -78,7 +88,7 @@ asset permits to big_map {
 
 variable default_expiry : nat = 31556952
 
-// Functions ------------------------------------------------------------------
+/* FUNCTIONS --------------------------------------------------------------- */
 
 function get_default_expiry(addr : address) : nat {
   return (permits[addr] ? (the.user_expiry ? the : default_expiry) : default_expiry)
@@ -94,7 +104,7 @@ function has_expired(up : user_permit, e : nat) : bool {
   return (up.created_at + (up.expiry ? the : e) * 1s < now)
 }
 
-// Permit entries -------------------------------------------------------------
+/* ENTRYPOINTS ------------------------------------------------------------- */
 
 enum consumer_op =
 | add<address>

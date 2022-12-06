@@ -1,12 +1,18 @@
 archetype permits(owner : address) with metadata ""
 
+/* CONSTANTS ------------------------------------------------------------------ */
+
+constant MAX_NUMBER_PERMITS : nat = 20_000
+
 /* ERRORS ------------------------------------------------------------------ */
 
+constant DUP_PERMIT            : string = "DUP_PERMIT"
 constant EXPIRY_TOO_BIG        : string = "EXPIRY_TOO_BIG"
 constant USER_PERMIT_NOT_FOUND : string = "USER_PERMIT_NOT_FOUND"
 constant PERMIT_NOT_FOUND      : string = "PERMIT_NOT_FOUND"
 constant MISSIGNED             : string = "MISSIGNED"
 constant PERMIT_EXPIRED        : string = "PERMIT_EXPIRED"
+constant MAX_PERMITS_REACHED   : string = "MAX_PERMITS_REACHED"
 
 /* OWNERSHIP TRANSFER ------------------------------------------------------- */
 
@@ -111,6 +117,7 @@ enum consumer_op =
 | remove<address>
 
 entry manage_consumer(op : consumer_op) {
+  no transfer
   called by owner
   effect {
     match op with
@@ -121,23 +128,47 @@ entry manage_consumer(op : consumer_op) {
 }
 
 entry set_expiry(iv : option<nat>, ip : option<bytes>) {
+  no transfer
+  constant {
+    caller_permit ?is permits[caller] otherwise (USER_PERMIT_NOT_FOUND, caller);
+  }
   require {
     r1: is_not_paused();
     r2: iv ? the < default_expiry : true otherwise EXPIRY_TOO_BIG;
   }
   effect {
-    const caller_permit ?= permits[caller] : (USER_PERMIT_NOT_FOUND, caller);
     match ip with
-    | some(p) -> begin
+    | some(permit_key) -> begin
         if (iv ? the > 0 : true) then begin
           const up : user_permit ?=
-            caller_permit.user_permits[p] : (PERMIT_NOT_FOUND, (caller, p));
-          permits[caller].user_permits.update(p, some({ up with expiry = iv }))
+            caller_permit.user_permits[permit_key] : (PERMIT_NOT_FOUND, (caller, permit_key));
+          permits[caller].user_permits.update(permit_key, some({ up with expiry = iv }))
         end else begin
-          permits[caller].user_permits.remove(p)
+          permits[caller].user_permits.remove(permit_key)
         end
       end
     | none    -> permits.update(caller, { user_expiry = iv })
+    end
+  }
+}
+
+entry setExpiry(u : address, sec : nat, data : option<bytes>) {
+  no transfer
+  called by u
+  constant {
+    u_permit ?is permits[u] otherwise (USER_PERMIT_NOT_FOUND, u);
+  }
+  require {
+    r5: is_not_paused();
+  }
+  effect {
+    match data with
+    | some(permit_key) -> begin
+        const up : user_permit ?=
+          u_permit.user_permits[permit_key] : (PERMIT_NOT_FOUND, (caller, permit_key));
+        permits[u].user_permits.update(permit_key, some({ up with expiry = some(sec) }))
+      end
+    | none -> permits.update(caller, { user_expiry = some(sec) })
     end
   }
 }
@@ -150,25 +181,28 @@ entry set_default_expiry(v : nat) {
   }
 }
 
-entry permit(pk : key, sig : signature, data : bytes) {
+entry permit(signer : key, sig : signature, permit_key : bytes) {
+  no transfer
   constant {
-    user          is key_to_address(pk);
+    user          is key_to_address(signer);
     usr_permit    is permits[user] ?
                       (the.counter, the.user_permits) :
                       (0, make_map<bytes, user_permit>([]));
-    pcounter      is usr_permit[0];
-    puser_permits is usr_permit[1];
-    to_sign       is pack(((self_address, self_chain_id), (pcounter, data)));
+    lcounter      is usr_permit[0];
+    luser_permits is usr_permit[1];
+    to_sign       is pack(((self_address, self_chain_id), (lcounter, permit_key)));
     usr_expiry    is get_default_expiry(user);
   }
   require {
     p4: is_not_paused();
-    p5: check_signature(pk, sig, to_sign) otherwise (MISSIGNED, to_sign)
+    p5: check_signature(signer, sig, to_sign) otherwise (MISSIGNED, to_sign);
+    p6: (not (luser_permits.contains(permit_key))) otherwise (DUP_PERMIT, permit_key);
+    p7: luser_permits.length() < MAX_NUMBER_PERMITS otherwise MAX_PERMITS_REACHED
   }
   effect {
     permits.add_update(user, {
       counter += 1;
-      user_permits = put(puser_permits, data, {
+      user_permits = put(luser_permits, permit_key, {
         expiry = some(usr_expiry);
         created_at = now
       })
@@ -180,37 +214,38 @@ entry permit(pk : key, sig : signature, data : bytes) {
   }
 }
 
-entry consume(signer : address, data: bytes, err: string) {
+entry consume(user : address, permit_key: bytes, err: string) {
+  no transfer
   called by consumer
   constant {
-   permit_key     is blake2b(data);
-   signer_expiry  is get_expiry(signer, permit_key);
-   lpermit       ?is permits[signer]                  otherwise USER_PERMIT_NOT_FOUND;
+   signer_expiry  is get_expiry(user, permit_key);
+   lpermit       ?is permits[user]                    otherwise err;
    luser_permits ?is lpermit.user_permits[permit_key] otherwise err;
   }
   require {
-    p6: is_not_paused()
+    p8: is_not_paused()
   }
   fail if {
-    p7 : has_expired(luser_permits, signer_expiry) with PERMIT_EXPIRED
+    p9 : has_expired(luser_permits, signer_expiry) with (PERMIT_EXPIRED, ((luser_permits.created_at + (luser_permits.expiry ? the : signer_expiry) * 1s)))
   }
   effect {
-    permits[signer].user_permits.remove(permit_key)
+    permits[user].user_permits.remove(permit_key)
   }
 }
 
 entry check(signer : key, sig : signature, data : bytes) {
+  no transfer
   called by consumer
   constant {
-    pkh      is key_to_address(signer);
-    lcounter is permits[pkh] ? the.counter : 0;
-    to_sign  is pack((self_address, lcounter, blake2b(data)));
+    user     is key_to_address(signer);
+    lcounter is permits[user] ? the.counter : 0;
+    to_sign  is pack(((self_address, self_chain_id), (lcounter, data)));
   }
   require {
-    p8: is_not_paused();
-    p9: check_signature(signer, sig, to_sign) otherwise (MISSIGNED, to_sign)
+    p10: is_not_paused();
+    p11: check_signature(signer, sig, to_sign) otherwise (MISSIGNED, to_sign)
   }
   effect {
-    permits.add_update(pkh, { counter = (lcounter + 1)});
+    permits.add_update(user, { counter = (lcounter + 1)});
   }
 }
